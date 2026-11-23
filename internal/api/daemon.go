@@ -149,8 +149,7 @@ type Daemon struct {
 	// oidcVerifier, authorizer and the likes.
 	configReloadMu *sync.Mutex
 
-	clientCertificate string
-	clientKey         string
+	clientKeypair *securitytls.ClientKeypairHolder
 
 	authenticator *authn.Authenticator
 	oidcVerifier  *authnoidc.Verifier
@@ -238,6 +237,7 @@ func NewDaemon(ctx context.Context, env environment) *Daemon {
 	d := &Daemon{
 		env:            env,
 		configReloadMu: &sync.Mutex{},
+		clientKeypair:  securitytls.NewClientKeypairHolder("", ""),
 		restartCh:      make(chan struct{}, 1),
 		listeners:      &listener.ListenerSet{},
 
@@ -313,6 +313,11 @@ func (d *Daemon) Start(ctx context.Context) error {
 		}
 	})
 
+	// Replace the client keypair when the cluster updates it.
+	lifecycle.ClientKeypairUpdateSignal.AddListener(func(_ context.Context, msg lifecycle.ClientKeypairMessage) {
+		d.clientKeypair.Set(msg.Certificate, msg.Key)
+	})
+
 	// On update of ACME configuration, perform renewal of the server certificate.
 	lifecycle.SecurityACMEUpdateSignal.AddListener(func(ctx context.Context, ssa apisystem.SecurityACME) {
 		// Only the leader renews and distributes the shared certificate.
@@ -342,8 +347,7 @@ func (d *Daemon) Start(ctx context.Context) error {
 	})
 
 	client := incusAdapter.New(
-		d.clientCertificate,
-		d.clientKey,
+		d.clientKeypair,
 		incusAdapter.WithEnvironment(d.env),
 		incusAdapter.WithSkipGetServer(true),
 	)
@@ -444,7 +448,7 @@ func (d *Daemon) Start(ctx context.Context) error {
 	tasks := append([]task.TaskFunc{lifecycleEventsMonitorTask(clusterSvc)}, d.backgroundTasks(updateSvc, imageSourceSvc, serverSvc, clusterSvc, imageFlasher, secureBootMedia, warningLogEmitter)...)
 
 	// Setup API routes
-	membershipSvc, isClustered, err := d.setupClusterMembershipService(ctx, localDB, tasks)
+	membershipSvc, isClustered, err := d.setupClusterMembershipService(ctx, localDB, tasks, warningSvc, clusteringSvc.WithJoinCheck(d.joinCheck(serverSvc, clusterSvc)))
 	if err != nil {
 		return err
 	}
@@ -667,11 +671,10 @@ func (d *Daemon) loadClientCertificate(ctx context.Context) {
 		slog.WarnContext(ctx, "failed to read client key", slog.String("file", config.ClientKeyFilename), logger.Err(err))
 	}
 
-	d.clientCertificate = string(clientCert)
-	d.clientKey = string(clientKey)
+	d.clientKeypair.Set(string(clientCert), string(clientKey))
 }
 
-func (d *Daemon) setupClusterMembershipService(ctx context.Context, localDB *clusterRepo.LocalDB, tasks []clusteringSvc.LeaderTask, warnings warning.WarningEmitter) (clusteringSvc.MembershipService, bool, error) {
+func (d *Daemon) setupClusterMembershipService(ctx context.Context, localDB *clusterRepo.LocalDB, tasks []clusteringSvc.LeaderTask, warnings warning.WarningEmitter, opts ...clusteringSvc.Option) (clusteringSvc.MembershipService, bool, error) {
 	// go-cowsql opens the raft database by path.
 	localRepo := clusterRepo.NewRaftRepo(localDB, filepath.Join(d.varRoot.Name(), "database"), d.systemSvc)
 	isClustered, err := cowsqlmembership.Enabled(localRepo)
@@ -694,7 +697,7 @@ func (d *Daemon) setupClusterMembershipService(ctx context.Context, localDB *clu
 	}
 
 	// The raft repos aren't wrapped with slog, they run every transaction of the daemon.
-	svc, err := clusteringSvc.NewClusterMembershipService(ctx, d.env, d.varRoot, d.systemSvc, d.listeners, localRepo, clusterCert, localCert, tasks, warnings)
+	svc, err := clusteringSvc.NewClusterMembershipService(ctx, d.env, d.varRoot, d.systemSvc, d.listeners, localRepo, clusterCert, localCert, tasks, warnings, opts...)
 	if err != nil {
 		return nil, false, err
 	}
@@ -720,7 +723,7 @@ func (d *Daemon) initGlobalDB(ctx context.Context, isClustered bool, membership 
 	configRepo := clusterRepoMiddleware.NewConfigRepoWithSlog(
 		clusterRepo.NewConfigRepo(globalRepo),
 	)
-	err = membership.Enable(ctx, clusterAddress, configRepo, globalRepo)
+	err = membership.Enable(ctx, clusterAddress, clusterRepo.NewJoinTokenRepo(globalRepo), configRepo, globalRepo)
 	if err != nil {
 		return nil, err
 	}
@@ -1232,8 +1235,7 @@ func (d *Daemon) setupClusterService(
 
 	terraformProvisioner, err := terraform.New(
 		terraformRoot,
-		d.clientCertificate,
-		d.clientKey,
+		d.clientKeypair,
 	)
 	if err != nil {
 		return nil, err
@@ -1335,8 +1337,7 @@ func (d *Daemon) setupAPIRoutes(
 	serverClientProvider := serverMiddleware.NewServerClientWithSlog(
 		serverMiddleware.NewServerClientWithErrorWrapper(
 			incusAdapter.New(
-				d.clientCertificate,
-				d.clientKey,
+				d.clientKeypair,
 			),
 			domain.RetryableWrapper(),
 		),
@@ -1514,8 +1515,7 @@ func (d *Daemon) setupAPIRoutes(
 		"/1.0/provisioning/servers",
 		d.authorizer,
 		serverSvc,
-		d.clientCertificate,
-		d.clientKey,
+		d.clientKeypair,
 	)
 
 	provisioningUpdateRouter := provisioningRouter.SubGroup("/updates")
@@ -2543,6 +2543,7 @@ func (d *Daemon) Stop(ctx context.Context) error {
 
 	// Remove all signal listeners.
 	lifecycle.ServerCertificateUpdateSignal.Reset()
+	lifecycle.ClientKeypairUpdateSignal.Reset()
 	lifecycle.NetworkUpdateSignal.Reset()
 	lifecycle.SharedNetworkUpdateSignal.Reset()
 	lifecycle.SharedSettingsUpdateSignal.Reset()
