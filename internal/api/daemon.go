@@ -1235,6 +1235,7 @@ func (d *Daemon) setupTokenService(db dbdriver.DBTX, client provisioning.TokenCl
 		config.GetNetwork().OperationsCenterAddress,
 		d.apiCertificate,
 		flasher.WithCacheRoot(seedImageCacheRoot),
+		flasher.WithMediaRecords(d.mediaRecords(db, provisioning.MediaTypeSeedImage, config.SeedImageCacheTTL)),
 	)
 	// Image flasher needs to learn about updates to the server certificate.
 	lifecycle.ServerCertificateUpdateSignal.AddListener(func(_ context.Context, cert tls.Certificate) {
@@ -1749,7 +1750,7 @@ func (d *Daemon) setupAPIRoutes(
 	provisioningRouter := api10router.SubGroup("/provisioning")
 
 	provisioningTokenRouter := provisioningRouter.SubGroup("/tokens")
-	registerProvisioningTokenHandler(provisioningTokenRouter, d.authorizer, tokenSvc, seedImageProgress)
+	registerProvisioningTokenHandler(provisioningTokenRouter, d.authorizer, tokenSvc, seedImageProgress, forward)
 
 	provisioningSecureBootMediaRouter := provisioningRouter.SubGroup("/secure-boot-media")
 	registerSecureBootMediaHandler(provisioningSecureBootMediaRouter, secureBootMedia, forward)
