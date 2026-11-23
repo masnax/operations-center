@@ -9,8 +9,18 @@ import QueryError from "components/QueryError";
 const SystemNetworkConfiguration = () => {
   const { notify } = useNotification();
 
+  const {
+    data: result = undefined,
+    error,
+    isLoading,
+    refetch,
+  } = useQuery({
+    queryKey: ["system_network"],
+    queryFn: () => fetchSystemNetwork(),
+  });
+
   const onSubmit = (network: SystemNetwork) => {
-    updateSystemNetwork(JSON.stringify(network, null, 2))
+    updateSystemNetwork(JSON.stringify(network, null, 2), result?.etag ?? "")
       .then((response) => {
         if (response.error_code == 0) {
           notify.success(`Network settings updated`);
@@ -20,17 +30,10 @@ const SystemNetworkConfiguration = () => {
       })
       .catch((e) => {
         notify.error(`Error during network settings update: ${e}`);
-      });
+      })
+      // The ETag changes with every update, after a refused one the current config is shown.
+      .finally(() => refetch());
   };
-
-  const {
-    data: network = undefined,
-    error,
-    isLoading,
-  } = useQuery({
-    queryKey: ["system_network"],
-    queryFn: () => fetchSystemNetwork(),
-  });
 
   if (isLoading) {
     return <div>Loading...</div>;
@@ -40,7 +43,7 @@ const SystemNetworkConfiguration = () => {
     return <QueryError error={error} label="the network settings" />;
   }
 
-  return <SystemNetworkForm network={network} onSubmit={onSubmit} />;
+  return <SystemNetworkForm network={result?.data} onSubmit={onSubmit} />;
 };
 
 export default SystemNetworkConfiguration;

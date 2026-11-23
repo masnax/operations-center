@@ -9,8 +9,18 @@ import QueryError from "components/QueryError";
 const SystemUpdatesConfiguration = () => {
   const { notify } = useNotification();
 
+  const {
+    data: result = undefined,
+    error,
+    isLoading,
+    refetch,
+  } = useQuery({
+    queryKey: ["system_updates"],
+    queryFn: () => fetchSystemUpdates(),
+  });
+
   const onSubmit = (updates: SystemUpdates) => {
-    updateSystemUpdates(JSON.stringify(updates, null, 2))
+    updateSystemUpdates(JSON.stringify(updates, null, 2), result?.etag ?? "")
       .then((response) => {
         if (response.error_code == 0) {
           notify.success(`System updates updated`);
@@ -20,17 +30,10 @@ const SystemUpdatesConfiguration = () => {
       })
       .catch((e) => {
         notify.error(`Error during system updates update: ${e}`);
-      });
+      })
+      // The ETag changes with every update, after a refused one the current config is shown.
+      .finally(() => refetch());
   };
-
-  const {
-    data: updates = undefined,
-    error,
-    isLoading,
-  } = useQuery({
-    queryKey: ["system_updates"],
-    queryFn: () => fetchSystemUpdates(),
-  });
 
   if (isLoading) {
     return <div>Loading...</div>;
@@ -40,7 +43,7 @@ const SystemUpdatesConfiguration = () => {
     return <QueryError error={error} label="the update settings" />;
   }
 
-  return <SystemUpdatesForm updates={updates} onSubmit={onSubmit} />;
+  return <SystemUpdatesForm updates={result?.data} onSubmit={onSubmit} />;
 };
 
 export default SystemUpdatesConfiguration;

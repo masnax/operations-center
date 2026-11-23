@@ -9,28 +9,36 @@ import QueryError from "components/QueryError";
 const SystemSettingsConfiguration = () => {
   const { notify } = useNotification();
 
-  const onSubmit = (settings: SystemSettings) => {
-    return updateSystemSettings(JSON.stringify(settings, null, 2))
-      .then((response) => {
-        if (response.error_code == 0) {
-          notify.success(`System settings updated`);
-          return;
-        }
-        notify.error(errorMessage(response));
-      })
-      .catch((e) => {
-        notify.error(`Error during system settings update: ${e}`);
-      });
-  };
-
   const {
-    data: settings = undefined,
+    data: result = undefined,
     error,
     isLoading,
+    refetch,
   } = useQuery({
     queryKey: ["system_settings"],
     queryFn: () => fetchSystemSettings(),
   });
+
+  const onSubmit = (settings: SystemSettings) => {
+    return (
+      updateSystemSettings(
+        JSON.stringify(settings, null, 2),
+        result?.etag ?? "",
+      )
+        .then((response) => {
+          if (response.error_code == 0) {
+            notify.success(`System settings updated`);
+            return;
+          }
+          notify.error(errorMessage(response));
+        })
+        .catch((e) => {
+          notify.error(`Error during system settings update: ${e}`);
+        })
+        // The ETag changes with every update, after a refused one the current config is shown.
+        .finally(() => refetch())
+    );
+  };
 
   if (isLoading) {
     return <div>Loading...</div>;
@@ -40,7 +48,7 @@ const SystemSettingsConfiguration = () => {
     return <QueryError error={error} label="the system settings" />;
   }
 
-  return <SystemSettingsForm settings={settings} onSubmit={onSubmit} />;
+  return <SystemSettingsForm settings={result?.data} onSubmit={onSubmit} />;
 };
 
 export default SystemSettingsConfiguration;
